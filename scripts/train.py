@@ -32,6 +32,7 @@ from vitra.utils import (
 )
 from vitra.training.fsdp import VLAFSDPStrategy
 from vitra.utils.config_utils import load_config
+from vitra.utils.device import distributed_backend, empty_cache, set_device
 from vitra.utils.overwatch import initialize_overwatch
 
 # === Environment Configuration ===
@@ -57,8 +58,8 @@ def experiment(variant):
             - Logging and checkpoint paths
     """
     # === Device Setup ===
-    torch.cuda.set_device(device_id := overwatch.local_rank())
-    torch.cuda.empty_cache()
+    set_device(device_id := overwatch.local_rank())
+    empty_cache()
     
     # === Weights & Biases Setup ===
     overwatch.info("VITRA VLA Training :: Creating Folders", ctx_level=1)
@@ -545,8 +546,8 @@ if __name__ == "__main__":
     configs = load_config(args.get("config"))
     configs = update_configs(configs, args)
     
-    # Initialize distributed training backend (NCCL for NVIDIA GPUs)
+    # Initialize distributed training backend (NCCL for NVIDIA GPUs, XCCL for Intel XPUs)
     if not dist.is_initialized():
-        dist.init_process_group(backend="nccl")
+        dist.init_process_group(backend=distributed_backend())
 
     experiment(variant=configs)

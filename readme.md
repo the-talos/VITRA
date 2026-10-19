@@ -335,6 +335,20 @@ unnorm_action = normalizer.unnormalize_action(norm_action)
 print("Predicted Action:", unnorm_action)
 ```
 
+### How to run the same on Intel's XPU
+Skip the `pip install -e .` line of step 1.1 as it is written: its `torch`, `torchvision` and `torchaudio` pins are CUDA wheels. Install the XPU build of PyTorch instead, then the package without its dependencies, and add the other entries of `dependencies` in `pyproject.toml` by hand:
+```bash
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/xpu
+pip install -e . --no-deps
+```
+Run the same inference script with `--device xpu:0`. Without `--device`, the backend is detected (XPU, then CUDA, then CPU):
+```bash
+python scripts/inference_human_prediction.py --config_path VITRA-VLA/VITRA-VLA-3B --image_path ./examples/0002.jpg --sample_times 4 --use_right --video_path ./example_human_inf.mp4 --mano_path ./weights/mano --instruction "Left hand: None. Right hand: Pick up the picture of Michael Jackson." --device xpu:0
+```
+In the Python example above, use `load_model(configs).to("xpu:0")` in place of `.cuda()`. `predict_action` runs on the device the model sits on.
+
+Hand reconstruction from a raw image (HaWoR and MoGe) stays CUDA-only. On an XPU host, use an image with a precomputed `.npy` hand state next to it, as the files in `examples/` have. PyTorch3D has no XPU kernels, so the hand meshes are rendered on the CPU there.
+
 ---
 
 ## 3. Fine-tuning with a Custom Robot Dataset

@@ -13,6 +13,7 @@ import multiprocessing as mp
 from vitra.models import VITRA_Paligemma, load_model
 from vitra.utils.data_utils import resize_short_side_to_target, load_normalizer, recon_traj
 from vitra.utils.config_utils import load_config
+from vitra.utils.device import empty_cache, resolve_device, synchronize
 from vitra.datasets.human_dataset import pad_state_human, pad_action
 from scipy.spatial.transform import Rotation as R
 from vitra.datasets.dataset_utils import (
@@ -25,7 +26,7 @@ from vitra.datasets.dataset_utils import (
 repo_root = Path(__file__).parent.parent  # VITRA/
 sys.path.insert(0, str(repo_root))
 
-from visualization.visualize_core import HandVisualizer, normalize_camera_intrinsics, save_to_video, Renderer, process_single_hand_labels
+from visualization.visualize_core import HandVisualizer, normalize_camera_intrinsics, save_to_video, Renderer, process_single_hand_labels, get_render_device
 from visualization.visualize_core import Config as HandConfig
 
 def main():
@@ -73,6 +74,9 @@ def main():
     parser.add_argument('--mano_path', type=str, default='/home/t-qixiuli/repo/VITRA/weights/mano', help='Path to MANO model files')
     # parser.add_argument('--output_path', type=str, default='./recon_results.npy', help='Path to save reconstruction results')
     
+    # Device for the VLA model: xpu, cuda or cpu, auto-detected (xpu, then cuda, then cpu) when omitted
+    parser.add_argument('--device', type=str, default=None, help='Device for VLA inference, e.g. xpu:0 or cuda:0 (default: auto-detect)')
+
     # Prediction Settings
     parser.add_argument('--use_left', action='store_true', help='Enable left hand prediction')
     parser.add_argument('--use_right', action='store_true', help='Enable right hand prediction')
@@ -138,6 +142,11 @@ def main():
         hand_recon_service = None
     else:
         print(f"No precomputed hand state .npy found at {npy_path}. Starting hand reconstruction service.")
+        if not torch.cuda.is_available():
+            raise RuntimeError(
+                "Hand reconstruction (HaWoR and MoGe) needs CUDA. Pass an image with a precomputed "
+                f"hand state next to it ({npy_path.name}) to run on another device."
+            )
         
         # Start hand reconstruction service
         hand_recon_service = HandReconstructionService(args)
@@ -145,7 +154,7 @@ def main():
 
 
     # Start VLA service (normalizer and model are loaded inside the service)
-    vla_service = VLAInferenceService(configs)
+    vla_service = VLAInferenceService(configs, device=str(resolve_device(args.device)))
     
     # Visualization setup
     hand_config = HandConfig(args)
@@ -238,7 +247,7 @@ def main():
         
         fx_exo = intrinsics[0, 0]
         fy_exo = intrinsics[1, 1]
-        renderer = Renderer(w, h, (fx_exo, fy_exo), 'cuda')
+        renderer = Renderer(w, h, (fx_exo, fy_exo), get_render_device())
 
         T = len(action_mask) + 1
         traj_right_list = np.zeros((sample_times, T, 51), dtype=np.float32)
@@ -480,7 +489,7 @@ def _hand_reconstruction_worker(args_dict, task_queue, result_queue):
         print("[HandRecon Process] Cleaned up and exiting")
 
 
-def _vla_inference_worker(configs_dict, task_queue, result_queue):
+def _vla_inference_worker(configs_dict, task_queue, result_queue, device=None):
     """
     Persistent worker for VLA model inference that runs in a separate process.
     Keeps model loaded and processes multiple requests until shutdown signal.
@@ -492,11 +501,12 @@ def _vla_inference_worker(configs_dict, task_queue, result_queue):
     
     model = None
     normalizer = None
+    device = resolve_device(device)
     
     try:
         # Load model and normalizer once
-        print("[VLA Process] Loading VLA model...")
-        model = load_model(configs_dict).cuda()
+        print(f"[VLA Process] Loading VLA model on {device}...")
+        model = load_model(configs_dict).to(device)
         model.eval()
         normalizer = load_normalizer(configs_dict)
         print(f"[VLA Process] VLA model ready.")
@@ -603,8 +613,8 @@ def _vla_inference_worker(configs_dict, task_queue, result_queue):
             del model
         if normalizer is not None:
             del normalizer
-        torch.cuda.empty_cache()
-        torch.cuda.synchronize()
+        empty_cache(device)
+        synchronize(device)
         print("[VLA Process] Cleaned up and exiting")
 
 
@@ -663,7 +673,7 @@ class HandReconstructionService:
 class VLAInferenceService:
     """Service wrapper for persistent VLA inference process"""
     
-    def __init__(self, configs):
+    def __init__(self, configs, device=None):
         self.ctx = mp.get_context('spawn')
         self.task_queue = self.ctx.Queue()
         self.result_queue = self.ctx.Queue()
@@ -671,7 +681,7 @@ class VLAInferenceService:
         # Start persistent process
         self.process = self.ctx.Process(
             target=_vla_inference_worker,
-            args=(configs, self.task_queue, self.result_queue)
+            args=(configs, self.task_queue, self.result_queue, device)
         )
         self.process.start()
         

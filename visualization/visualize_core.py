@@ -14,6 +14,15 @@ from typing import Optional, List, Tuple
 from libs.models.mano_wrapper import MANO
 from .render_utils import Renderer
 
+
+def get_render_device() -> torch.device:
+    """Device for MANO and the PyTorch3D renderer.
+
+    PyTorch3D ships kernels for CUDA and CPU only, so meshes render on CUDA when it
+    is present and on the CPU otherwise (for example on an XPU host).
+    """
+    return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
 class Config:
     """
     Configuration class for file paths, parameters, and visual settings.
@@ -52,8 +61,9 @@ class HandVisualizer:
             self.all_modes = ['cam', 'full', 'first']
 
         # Initialize MANO and faces (use right hand model for both hands by default)
-        self.mano = MANO(model_path=self.config.MANO_MODEL_PATH).cuda()
-        faces_right = torch.from_numpy(self.mano.faces).float().cuda()
+        self.render_device = get_render_device()
+        self.mano = MANO(model_path=self.config.MANO_MODEL_PATH).to(self.render_device)
+        faces_right = torch.from_numpy(self.mano.faces).float().to(self.render_device)
         # MANO faces are defined for right hand, left hand faces need vertex order flip
         self.faces_left = faces_right[:, [0, 2, 1]]
         self.faces_right = faces_right
@@ -147,14 +157,14 @@ class HandVisualizer:
                 right_verts_list, right_color_list, right_face_list = ([], [], [])
 
                 if left_mask_k != 0:
-                    left_verts_list = [torch.from_numpy(verts_left_camspace[kk]).float().cuda()]
+                    left_verts_list = [torch.from_numpy(verts_left_camspace[kk]).float().to(self.render_device)]
                     # Repeat color for all 778 vertices
-                    left_color_list = [torch.from_numpy(left_colors[kk]).float().unsqueeze(0).repeat(778, 1).cuda()]
+                    left_color_list = [torch.from_numpy(left_colors[kk]).float().unsqueeze(0).repeat(778, 1).to(self.render_device)]
                     left_face_list = [self.faces_left]
 
                 if right_mask_k != 0:
-                    right_verts_list = [torch.from_numpy(verts_right_camspace[kk]).float().cuda()]
-                    right_color_list = [torch.from_numpy(right_colors[kk]).float().unsqueeze(0).repeat(778, 1).cuda()]
+                    right_verts_list = [torch.from_numpy(verts_right_camspace[kk]).float().to(self.render_device)]
+                    right_color_list = [torch.from_numpy(right_colors[kk]).float().unsqueeze(0).repeat(778, 1).to(self.render_device)]
                     right_face_list = [self.faces_right]
 
                 verts_list  = left_verts_list + right_verts_list
@@ -229,7 +239,7 @@ class HandVisualizer:
             fx_exo = intrinsics_denorm[0, 0]
             fy_exo = intrinsics_denorm[1, 1]
 
-            renderer = Renderer(W, H, (fx_exo, fy_exo), 'cuda')
+            renderer = Renderer(W, H, (fx_exo, fy_exo), self.render_device)
 
             # 5. Render Hands for All Modes
             all_rendered_frames = []
@@ -389,11 +399,12 @@ def process_single_hand_labels(hand_labels: dict, hand_mask: np.ndarray, mano: M
         pose[mask_indices] = identity_block
     # pose[hand_mask == 0] = identity_block
 
-    beta_torch = torch.from_numpy(beta).float().cuda().unsqueeze(0).repeat(T, 1)
-    pose_torch = torch.from_numpy(pose).float().cuda()
+    mano_device = next(mano.buffers()).device  # MANO keeps its tensors as buffers
+    beta_torch = torch.from_numpy(beta).float().to(mano_device).unsqueeze(0).repeat(T, 1)
+    pose_torch = torch.from_numpy(pose).float().to(mano_device)
     
     # Placeholder for global orientation in MANO forward pass (will be applied manually later)
-    global_rot_placeholder = torch.eye(3).float().unsqueeze(0).unsqueeze(0).cuda().repeat(T, 1, 1, 1)
+    global_rot_placeholder = torch.eye(3).float().unsqueeze(0).unsqueeze(0).to(mano_device).repeat(T, 1, 1, 1)
     # MANO forward pass
     mano_out = mano(betas=beta_torch, hand_pose=pose_torch, global_orient=global_rot_placeholder)
     

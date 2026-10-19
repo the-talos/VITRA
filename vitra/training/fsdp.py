@@ -39,6 +39,7 @@ from transformers.optimization import (
 
 from vitra.training.base_strategy import TrainingStrategy
 from vitra.training.metrics import VLAMetrics
+from vitra.utils.device import current_device, empty_cache
 from vitra.utils.overwatch import initialize_overwatch
 
 # Initialize Overwatch =>> Wraps `logging.Logger`
@@ -283,7 +284,7 @@ class VLAFSDPStrategy(TrainingStrategy):
             auto_wrap_policy=auto_wrap_policy,
             mixed_precision=fsdp_precision_policy,
             sharding_strategy=self.fsdp_sharding_strategy,
-            device_id=torch.cuda.current_device(),
+            device_id=current_device(),
             limit_all_gathers=True,
             use_orig_params=True,
         )
@@ -539,7 +540,7 @@ class VLAFSDPStrategy(TrainingStrategy):
                         metrics.run_dir, metrics.global_step, epoch, only_trainable=not save_full_model, is_epoch_end=True
                     )
                 gc.collect()
-                torch.cuda.empty_cache()
+                empty_cache()
 
 # Custom LR Scheduler for different parameter groups
 class MultiGroupLRScheduler:

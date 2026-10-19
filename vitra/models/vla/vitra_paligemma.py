@@ -12,6 +12,7 @@ from functools import partial
 from vitra.utils.tensor_utils import move_masked_to_left, get_mask_of_last_masked_index, move_masked_to_left_ids
 from vitra.models.vlm_builder import build_vlm
 from vitra.utils.overwatch import initialize_overwatch
+from vitra.utils.device import device_type
 
 # Initialize Overwatch =>> Wraps `logging.Logger`
 overwatch = initialize_overwatch(__name__)
@@ -323,7 +324,7 @@ class VITRA_Paligemma(nn.Module):
         position_ids = cache_position.unsqueeze(0) + 1  # Paligemma positions are 1-indexed
         # Merge text and images
         if pixel_values is not None:
-            with torch.autocast("cuda", dtype=torch.bfloat16, enabled=self.use_bf16):
+            with torch.autocast(device_type(self), dtype=torch.bfloat16, enabled=self.use_bf16):
                 image_features = self.model.get_image_features(pixel_values)
 
             special_image_mask = (input_ids == self.model.config.image_token_index).unsqueeze(-1)
@@ -370,7 +371,7 @@ class VITRA_Paligemma(nn.Module):
                 **kwargs,
             )
 
-        with torch.autocast("cuda", dtype=torch.bfloat16, enabled=self.use_bf16):
+        with torch.autocast(device_type(self), dtype=torch.bfloat16, enabled=self.use_bf16):
             outputs = self.model.language_model(
                 past_key_values=None,
                 use_cache=use_cache,
@@ -469,16 +470,18 @@ class VITRA_Paligemma(nn.Module):
             else:
                 raise ValueError(f"Unsupported image shape: {image.shape}")
         prefix = '<image>'
-        model_inputs = self.processor(text=prefix + instruction, images=image, return_tensors="pt").to('cuda')
+        # Inputs follow the device the model was moved to (cuda, xpu or cpu).
+        device = next(self.parameters()).device
+        model_inputs = self.processor(text=prefix + instruction, images=image, return_tensors="pt").to(device)
         pixel_value = model_inputs['pixel_values']
         input_ids = model_inputs['input_ids']
 
         # Preprocess Image
         if isinstance(pixel_value, torch.Tensor):
-            pixel_value = pixel_value.to('cuda')
+            pixel_value = pixel_value.to(device)
         elif isinstance(pixel_value, dict):
             pixel_value = {
-                k: torch.stack([pixel_value[idx][k] for idx in range(len(input_ids))]).to('cuda') for k in pixel_value[0]
+                k: torch.stack([pixel_value[idx][k] for idx in range(len(input_ids))]).to(device) for k in pixel_value[0]
             }
         else:
             raise ValueError(f"Unsupported `pixel_values` type = {type(pixel_value)}")
